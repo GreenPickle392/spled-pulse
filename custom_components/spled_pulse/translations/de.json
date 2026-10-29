@@ -1,0 +1,86 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "Wähle den SPLED-Controller aus, der hinzugefügt werden soll. Es werden nur eingeschaltete Controller in Bluetooth-Reichweite angezeigt.",
+        "data": {
+          "address": "Controller"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "{name} ({model}) zu Home Assistant hinzufügen?"
+      }
+    },
+    "abort": {
+      "already_configured": "Dieser Controller ist bereits eingerichtet.",
+      "no_devices_found": "Kein unterstützter SPLED-Controller in der Nähe gefunden. Stelle sicher, dass er eingeschaltet, in Reichweite und nicht mit der Handy-App verbunden ist.",
+      "not_supported": "Dieses Bluetooth-Gerät ist kein unterstützter SPLED-Controller."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Verbindungs- und Farbeinstellungen",
+        "data": {
+          "keepalive_interval": "Keepalive-Intervall",
+          "min_kelvin": "Wärmste Farbtemperatur",
+          "max_kelvin": "Kälteste Farbtemperatur"
+        },
+        "data_description": {
+          "keepalive_interval": "Wie oft die Verbindung geprüft wird. Tote Verbindungen werden innerhalb dieser Zeit erkannt und neu aufgebaut.",
+          "min_kelvin": "Farbtemperatur der warmweißen LEDs deines Streifens.",
+          "max_kelvin": "Farbtemperatur der kaltweißen LEDs deines Streifens."
+        }
+      }
+    },
+    "error": {
+      "invalid_kelvin_range": "Die wärmste Temperatur muss niedriger als die kälteste sein."
+    }
+  },
+  "entity": {
+    "number": {
+      "effect_speed": {
+        "name": "Effektgeschwindigkeit"
+      },
+      "sensitivity": {
+        "name": "Mikrofonempfindlichkeit"
+      }
+    },
+    "select": {
+      "audio_input": {
+        "name": "Audioeingang",
+        "state": {
+          "internal_mic": "Eingebautes Mikrofon",
+          "player": "Handy / Player",
+          "external_mic": "Externes Mikrofon"
+        }
+      },
+      "power_on_state": {
+        "name": "Verhalten nach Stromausfall",
+        "state": {
+          "off": "Aus bleiben",
+          "on": "Einschalten",
+          "last": "Letzten Zustand wiederherstellen"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "device_not_found": {
+      "message": "Bluetooth-Gerät {address} ist außerhalb der Reichweite aller Adapter."
+    },
+    "device_no_response": {
+      "message": "{name} antwortet nicht. Ist er eingeschaltet und nicht mit der Handy-App verbunden?"
+    },
+    "unavailable": {
+      "message": "{name} ist gerade nicht erreichbar. Die Verbindung wird automatisch wiederhergestellt."
+    },
+    "command_failed": {
+      "message": "Der Befehl an {name} ist fehlgeschlagen: {error}"
+    },
+    "unknown_effect": {
+      "message": "Unbekannter Effekt: {effect}"
+    }
+  }
+}

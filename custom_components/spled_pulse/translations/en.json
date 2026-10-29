@@ -1,0 +1,86 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "Choose the SPLED controller to add. Only controllers that are powered and in Bluetooth range are listed.",
+        "data": {
+          "address": "Controller"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Add {name} ({model}) to Home Assistant?"
+      }
+    },
+    "abort": {
+      "already_configured": "This controller is already configured.",
+      "no_devices_found": "No supported SPLED controller found nearby. Make sure it is powered, in range and not connected to the phone app.",
+      "not_supported": "This Bluetooth device is not a supported SPLED controller."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Connection and color settings",
+        "data": {
+          "keepalive_interval": "Keepalive interval",
+          "min_kelvin": "Warmest color temperature",
+          "max_kelvin": "Coolest color temperature"
+        },
+        "data_description": {
+          "keepalive_interval": "How often the connection is checked. Dead connections are detected and re-established within this time.",
+          "min_kelvin": "Color temperature of the warm white LEDs on your strip.",
+          "max_kelvin": "Color temperature of the cool white LEDs on your strip."
+        }
+      }
+    },
+    "error": {
+      "invalid_kelvin_range": "The warmest temperature must be lower than the coolest temperature."
+    }
+  },
+  "entity": {
+    "number": {
+      "effect_speed": {
+        "name": "Effect speed"
+      },
+      "sensitivity": {
+        "name": "Microphone sensitivity"
+      }
+    },
+    "select": {
+      "audio_input": {
+        "name": "Audio input",
+        "state": {
+          "internal_mic": "Built-in microphone",
+          "player": "Phone / player",
+          "external_mic": "External microphone"
+        }
+      },
+      "power_on_state": {
+        "name": "Power-on behavior",
+        "state": {
+          "off": "Stay off",
+          "on": "Turn on",
+          "last": "Restore last state"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "device_not_found": {
+      "message": "Bluetooth device {address} is not in range of any adapter."
+    },
+    "device_no_response": {
+      "message": "{name} did not respond. Is it powered and not connected to the phone app?"
+    },
+    "unavailable": {
+      "message": "{name} is not reachable right now. It will reconnect automatically."
+    },
+    "command_failed": {
+      "message": "Sending the command to {name} failed: {error}"
+    },
+    "unknown_effect": {
+      "message": "Unknown effect: {effect}"
+    }
+  }
+}

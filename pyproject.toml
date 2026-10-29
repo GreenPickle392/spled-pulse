@@ -1,0 +1,22 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "BLE", "ASYNC", "RUF", "S"]
+# S101: asserts are fine for invariants. RUF012: Home Assistant declares
+# entity attributes as class-level sets/lists by convention.
+ignore = ["S101", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ASYNC109", "ASYNC110"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["spled_pulse"]
+known-third-party = ["homeassistant"]

@@ -1,0 +1,75 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: home-assistant/actions/hassfest@86d4564712fa02543c808e3a693dd04f9d3f8361 # master 2026-10-26
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main 2026-06-08
+        with:
+          category: integration
+
+  tests:
+    name: Lint, tests and Home Assistant import check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          pip install -r requirements_test.txt
+          # Requirements of the HA integrations we depend on, from their manifests.
+          python - <<'PY' > ha_requirements.txt
+          import json, pathlib, homeassistant.components as c
+          base = pathlib.Path(c.__path__[0])
+          todo, seen, reqs = ["bluetooth", "bluetooth_adapters", "diagnostics"], set(), set()
+          while todo:
+              name = todo.pop()
+              if name in seen or not (base / name / "manifest.json").exists():
+                  continue
+              seen.add(name)
+              manifest = json.loads((base / name / "manifest.json").read_text())
+              reqs.update(manifest.get("requirements", []))
+              todo += manifest.get("dependencies", [])
+          print(*sorted(reqs), sep=chr(10))
+          PY
+          cat ha_requirements.txt
+          pip install -r ha_requirements.txt
+      - name: Ruff
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Pytest
+        run: pytest -q
+      - name: Import every platform against Home Assistant
+        run: |
+          python - <<'PY'
+          import importlib
+          for mod in ("", ".config_flow", ".light", ".number", ".select", ".diagnostics"):
+              importlib.import_module("custom_components.spled_pulse" + mod)
+          print("all modules import cleanly")
+          PY
