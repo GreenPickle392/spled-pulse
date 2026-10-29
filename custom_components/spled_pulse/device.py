@@ -44,6 +44,7 @@ CONNECT_ATTEMPTS = 3
 STATUS_TIMEOUT = 6.0
 WRITE_TIMEOUT = 5.0
 DISCONNECT_TIMEOUT = 5.0
+STOP_TIMEOUT = 5.0
 COMMAND_CONNECT_TIMEOUT = 20.0
 COMMAND_GAP = 0.15
 REFRESH_DELAY = 0.6
@@ -53,6 +54,11 @@ RECONNECT_MAX_DELAY = 60.0
 UNAVAILABLE_GRACE = 45.0
 
 COMMUNICATION_ERRORS = (BleakError, TimeoutError, OSError, EOFError)
+
+
+def _describe(err: BaseException) -> str:
+    """Readable error text; TimeoutError and friends have an empty str()."""
+    return f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
 
 
 class DeviceUnavailableError(Exception):
@@ -76,6 +82,7 @@ class ConnectionStats:
     failed_attempts: int = 0
     keepalive_failures: int = 0
     command_retries: int = 0
+    resends: int = 0
     connected_since: float | None = None
     last_error: str | None = None
 
@@ -114,6 +121,8 @@ class SPLedDevice:
         self._grace_handle: asyncio.TimerHandle | None = None
         self._lost_at: float | None = None
         self._command_waiters = 0
+        self._write_response = False
+        self._pending: list[tuple[Sequence[bytes], dict[str, Any]]] = []
         self._stopping = False
 
         self.stats = ConnectionStats()
@@ -184,8 +193,9 @@ class SPLedDevice:
         for task in (self._refresh_task, self._runner):
             if task and not task.done():
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                # Bounded: a cancellation swallowed by a racing wait_for must
+                # never block Home Assistant shutdown or an entry reload.
+                await asyncio.wait({task}, timeout=STOP_TIMEOUT)
         self._runner = None
         self._refresh_task = None
         await self._teardown()
@@ -206,17 +216,18 @@ class SPLedDevice:
         try:
             await self._write(packets)
         except COMMUNICATION_ERRORS as err:
-            _LOGGER.debug("%s: write failed (%s), reconnecting", self._name, err)
+            _LOGGER.debug("%s: write failed (%s), reconnecting", self._name, _describe(err))
             self.stats.command_retries += 1
             await self._drop_link()
             await self._ensure_connected()
             try:
                 await self._write(packets)
             except COMMUNICATION_ERRORS as retry_err:
-                raise DeviceCommandError(str(retry_err)) from retry_err
+                raise DeviceCommandError(_describe(retry_err)) from retry_err
 
         if optimistic and self._state is not None:
             self._state = self._state.with_changes(**optimistic)
+            self._pending.append((packets, optimistic))
             self._notify_listeners()
         self._schedule_refresh()
 
@@ -233,11 +244,11 @@ class SPLedDevice:
                 raise
             except COMMUNICATION_ERRORS as err:
                 self.stats.failed_attempts += 1
-                self.stats.last_error = f"{type(err).__name__}: {err}"
-                _LOGGER.debug("%s: connection error: %s", self._name, err)
+                self.stats.last_error = _describe(err)
+                _LOGGER.debug("%s: connection error: %s", self._name, _describe(err))
             except Exception as err:
                 self.stats.failed_attempts += 1
-                self.stats.last_error = f"{type(err).__name__}: {err}"
+                self.stats.last_error = _describe(err)
                 _LOGGER.exception("%s: unexpected error", self._name)
             finally:
                 await self._teardown()
@@ -261,6 +272,7 @@ class SPLedDevice:
         _LOGGER.debug("%s: connecting to %s", self._name, self.address)
         self._link_lost.clear()
         self._assembler.reset()
+        self._pending.clear()  # a fresh status supersedes unverified commands
         client = await establish_connection(
             BleakClientWithServiceCache,
             self._current_ble_device(),
@@ -277,6 +289,10 @@ class SPLedDevice:
             await client.clear_cache()
             raise CharacteristicMissingError(f"characteristic {CHAR_UUID} missing")
         self._char = char
+        # Write-with-response stalls the whole ATT queue when the controller
+        # skips an acknowledgement (seen on firmware V3.0.06), so prefer
+        # unacknowledged writes and verify via status instead.
+        self._write_response = "write-without-response" not in char.properties
         await client.start_notify(char, self._on_notify)
         # Only a link that answers a status query counts as connected.
         await self._request_status()
@@ -291,7 +307,7 @@ class SPLedDevice:
 
     async def _supervise(self) -> None:
         """Return when the link is lost; raise when the keepalive fails."""
-        while True:
+        while not self._stopping:
             try:
                 await asyncio.wait_for(self._link_lost.wait(), self._keepalive_interval)
             except TimeoutError:
@@ -366,9 +382,16 @@ class SPLedDevice:
                 if index:
                     await asyncio.sleep(COMMAND_GAP)
                 _LOGGER.debug("%s: -> %s", self._name, packet.hex())
-                await asyncio.wait_for(
-                    client.write_gatt_char(char, packet, response=True), WRITE_TIMEOUT
-                )
+                try:
+                    await asyncio.wait_for(
+                        client.write_gatt_char(char, packet, response=self._write_response),
+                        WRITE_TIMEOUT,
+                    )
+                except COMMUNICATION_ERRORS:
+                    raise
+                except Exception as err:
+                    # Bleak raises e.g. AssertionError when the link is torn down mid-call.
+                    raise BleakError(_describe(err)) from err
 
     async def _request_status(self) -> None:
         self._status_received.clear()
@@ -390,11 +413,42 @@ class SPLedDevice:
     async def _refresh(self) -> None:
         if not self._connected.is_set():
             return
+        pending, self._pending = self._pending, []
         try:
             await self._request_status()
+            # Commands sent while we waited for the status are newer: they win.
+            if resend := self._unapplied(pending, superseded=self._pending):
+                # Write commands are unacknowledged; resend once what didn't stick.
+                _LOGGER.debug("%s: %d command(s) not applied, resending", self._name, len(resend))
+                self.stats.resends += len(resend)
+                for packets in resend:
+                    await self._write(packets)
+                await self._request_status()
         except COMMUNICATION_ERRORS as err:
             # The supervisor's keepalive deals with genuinely dead links.
-            _LOGGER.debug("%s: refresh failed: %s", self._name, err)
+            _LOGGER.debug("%s: refresh failed: %s", self._name, _describe(err))
+
+    def _unapplied(
+        self,
+        pending: list[tuple[Sequence[bytes], dict[str, Any]]],
+        superseded: list[tuple[Sequence[bytes], dict[str, Any]]],
+    ) -> list[Sequence[bytes]]:
+        """Commands whose expected fields don't match the reported state.
+
+        Later commands win: a field is only checked against the newest
+        command that set it, and never against one in ``superseded``.
+        """
+        if self._state is None:
+            return []
+        seen: set[str] = {key for _, expected in superseded for key in expected}
+        resend: list[Sequence[bytes]] = []
+        for packets, expected in reversed(pending):
+            relevant = {key: value for key, value in expected.items() if key not in seen}
+            seen.update(expected)
+            if any(getattr(self._state, key) != value for key, value in relevant.items()):
+                resend.append(packets)
+        resend.reverse()
+        return resend
 
     def _start_grace(self) -> None:
         self._cancel_grace()

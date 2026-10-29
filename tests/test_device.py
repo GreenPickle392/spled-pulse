@@ -22,8 +22,12 @@ class FakeController:
         self.responsive = True
         self.fail_connects = 0
         self.fail_next_write = False
+        self.drop_next_command = False  # accepted on the air but not applied
+        self.stall_acknowledged_writes = False  # firmware V3.0.06 behaviour
+        self.write_without_response = True
+        self.write_modes: list[bool] = []
         self.chunk_size = 20  # default ATT MTU payload, forces reassembly
-        self.frame = status_frame()
+        self.frame = bytearray(status_frame())
         self.clients: list[FakeClient] = []
         self.written: list[bytes] = []
 
@@ -48,9 +52,22 @@ class FakeController:
         return self.clients[-1]
 
 
+class FakeChar:
+    def __init__(self, properties: list[str]) -> None:
+        self.properties = properties
+
+
 class FakeServices:
-    def get_characteristic(self, uuid: str) -> object | None:
-        return object() if uuid == dev.CHAR_UUID else None
+    def __init__(self, ctrl: FakeController) -> None:
+        self._ctrl = ctrl
+
+    def get_characteristic(self, uuid: str) -> FakeChar | None:
+        if uuid != dev.CHAR_UUID:
+            return None
+        props = ["write", "notify"]
+        if self._ctrl.write_without_response:
+            props.append("write-without-response")
+        return FakeChar(props)
 
 
 class FakeClient:
@@ -59,7 +76,7 @@ class FakeClient:
         self._on_disconnect = on_disconnect
         self._notify: Callable[[Any, bytearray], None] | None = None
         self.is_connected = True
-        self.services = FakeServices()
+        self.services = FakeServices(ctrl)
 
     async def start_notify(self, _char: object, callback: Callable[..., None]) -> None:
         self._notify = callback
@@ -68,15 +85,22 @@ class FakeClient:
         pass
 
     async def write_gatt_char(self, _char: object, data: bytes, response: bool) -> None:
-        assert response is True
+        self._ctrl.write_modes.append(response)
         if not self.is_connected:
             raise BleakError("not connected")
         if self._ctrl.fail_next_write:
             self._ctrl.fail_next_write = False
             raise BleakError("simulated write failure")
         self._ctrl.written.append(bytes(data))
+        if data[1] == p.CMD_POWER:
+            if self._ctrl.drop_next_command:
+                self._ctrl.drop_next_command = False
+            else:
+                self._ctrl.frame[29] = data[6]
+        if response and self._ctrl.stall_acknowledged_writes:
+            await asyncio.Event().wait()  # applied, but the ATT response never comes
         if data == p.cmd_query_status() and self._ctrl.responsive:
-            frame = self._ctrl.frame
+            frame = bytes(self._ctrl.frame)
             size = self._ctrl.chunk_size
             loop = asyncio.get_running_loop()
             for start in range(0, len(frame), size):
@@ -102,6 +126,7 @@ def ctrl(monkeypatch: pytest.MonkeyPatch) -> FakeController:
     monkeypatch.setattr(dev, "COMMAND_CONNECT_TIMEOUT", 2.0)
     monkeypatch.setattr(dev, "COMMAND_GAP", 0.0)
     monkeypatch.setattr(dev, "REFRESH_DELAY", 0.01)
+    monkeypatch.setattr(dev, "WRITE_TIMEOUT", 0.3)
     return controller
 
 
@@ -279,3 +304,99 @@ async def test_command_cuts_long_backoff_short(
     # Arrives during the short minimum pause; must not be swallowed.
     await device.async_send([p.cmd_power(True)])
     assert p.cmd_power(True) in ctrl.written
+
+
+async def test_prefers_unacknowledged_writes(device: dev.SPLedDevice, ctrl: FakeController) -> None:
+    # Reproduces firmware V3.0.06: commands are applied but never acknowledged.
+    ctrl.stall_acknowledged_writes = True
+    await device.start()
+    assert await device.wait_ready(2)
+    await device.async_send([p.cmd_power(False)], {"power": False})
+    await wait_until(lambda: ctrl.written.count(p.cmd_query_status()) >= 2)
+    assert set(ctrl.write_modes) == {False}
+    assert device.stats.command_retries == 0
+    assert device.state is not None and device.state.power is False
+
+
+async def test_falls_back_to_acknowledged_writes(
+    device: dev.SPLedDevice, ctrl: FakeController
+) -> None:
+    ctrl.write_without_response = False
+    await device.start()
+    assert await device.wait_ready(2)
+    assert set(ctrl.write_modes) == {True}
+
+
+async def test_resends_command_that_did_not_apply(
+    device: dev.SPLedDevice, ctrl: FakeController
+) -> None:
+    await device.start()
+    assert await device.wait_ready(2)
+    ctrl.drop_next_command = True
+    await device.async_send([p.cmd_power(False)], {"power": False})
+    await wait_until(lambda: device.stats.resends == 1)
+    await wait_until(lambda: device.state is not None and device.state.power is False)
+    assert ctrl.frame[29] == 0
+    assert ctrl.written.count(p.cmd_power(False)) == 2
+
+
+async def test_newer_command_supersedes_unverified_one(
+    device: dev.SPLedDevice, ctrl: FakeController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(dev, "REFRESH_DELAY", 0.2)  # both commands before verifying
+    await device.start()
+    assert await device.wait_ready(2)
+    ctrl.drop_next_command = True
+    await device.async_send([p.cmd_power(False)], {"power": False})
+    await device.async_send([p.cmd_power(True)], {"power": True})
+    await wait_until(lambda: ctrl.written.count(p.cmd_query_status()) >= 2)
+    await asyncio.sleep(0.1)
+    # The dropped "off" must not be resent over the newer "on".
+    assert device.stats.resends == 0
+    assert ctrl.frame[29] == 1
+
+
+async def test_unexpected_write_exception_is_contained(
+    device: dev.SPLedDevice, ctrl: FakeController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await device.start()
+    assert await device.wait_ready(2)
+    calls = 0
+    original = FakeClient.write_gatt_char
+
+    async def broken_once(self: FakeClient, char: object, data: bytes, response: bool) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise AssertionError  # what bleak raises when its D-Bus handle is gone
+        await original(self, char, data, response)
+
+    monkeypatch.setattr(FakeClient, "write_gatt_char", broken_once)
+    await device.async_send([p.cmd_power(True)])
+    assert device.stats.command_retries == 1
+
+
+async def test_command_sent_during_verification_is_not_overwritten(
+    device: dev.SPLedDevice, ctrl: FakeController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await device.start()
+    assert await device.wait_ready(2)
+    ctrl.drop_next_command = True
+    await device.async_send([p.cmd_power(False)], {"power": False})
+    # Simulate the user turning the light on while the verification waits for status.
+    original = device._request_status
+    sent_newer = False
+
+    async def request_status_with_interleaved_command() -> None:
+        nonlocal sent_newer
+        if not sent_newer:
+            sent_newer = True
+            ctrl.frame[29] = 1  # status will still look like "off" was dropped
+            device._pending.append(([p.cmd_power(True)], {"power": True}))
+        await original()
+
+    monkeypatch.setattr(device, "_request_status", request_status_with_interleaved_command)
+    await wait_until(lambda: sent_newer)
+    await asyncio.sleep(0.1)
+    assert device.stats.resends == 0
+    assert ctrl.written.count(p.cmd_power(False)) == 1

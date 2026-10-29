@@ -151,3 +151,9 @@ def test_looks_like_spled(
 def test_describe_advertisement() -> None:
     text = p.describe_advertisement({20563: b"\x2d\x10"}, "SP642E", ["x"])
     assert text == "name='SP642E' manufacturer_data={20563: 2d 10} service_uuids=['x']"
+
+
+def test_model_detection_firmware_v3() -> None:
+    # Real advertisement from an SP642E running firmware V3.0.06.
+    data = {20563: bytes.fromhex("4a1035000000 1e67".replace(" ", ""))}
+    assert p.model_from_manufacturer_data(data) == "SP642E"

@@ -21,7 +21,8 @@ MAX_FRAME_LENGTH: Final = HEADER_LENGTH + 0xFF
 
 MANUFACTURER_ID: Final = 20563  # 0x5053, "SP"
 # First manufacturer data byte identifies the model, second is always 0x10.
-MODEL_IDS: Final[dict[int, str]] = {0x2D: "SP642E", 0x21: "SP632E"}
+# 0x4A is reported by SP642E firmware V3.0.06.
+MODEL_IDS: Final[dict[int, str]] = {0x2D: "SP642E", 0x4A: "SP642E", 0x21: "SP632E"}
 MODEL_MARKER: Final = 0x10
 
 CMD_STATUS: Final = 0x02
