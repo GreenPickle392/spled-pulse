@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
     async_discovered_service_info,
 )
 from homeassistant.config_entries import (
@@ -33,7 +35,13 @@ from .const import (
     DEFAULT_MIN_KELVIN,
     DOMAIN,
 )
-from .protocol import model_from_manufacturer_data
+from .device import SPLedDevice
+from .protocol import describe_advertisement, looks_like_spled, model_from_manufacturer_data
+
+_LOGGER = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "SP642E"
+PROBE_TIMEOUT = 30.0
 
 
 def _title(model: str, address: str) -> str:
@@ -80,33 +88,83 @@ class SPLedConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Let the user pick from controllers seen nearby."""
+        """Let the user pick a nearby device, then confirm it answers like an SPLED."""
+        errors: dict[str, str] = {}
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
             if address not in self._candidates:
                 return self.async_abort(reason="no_devices_found")
             await self.async_set_unique_id(address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
-            return self._create_entry(address, self._candidates[address][0])
-
-        configured = self._async_current_ids(include_ignore=False)
-        for info in async_discovered_service_info(self.hass, connectable=True):
-            if info.address in configured or info.address in self._candidates:
-                continue
-            if model := model_from_manufacturer_data(info.manufacturer_data):
-                self._candidates[info.address] = (model, info)
+            model, info = self._candidates[address]
+            if await self._async_probe(info):
+                return self._create_entry(address, model)
+            errors["base"] = "cannot_connect"
+        else:
+            self._candidates = self._async_find_candidates()
 
         if not self._candidates:
             return self.async_abort(reason="no_devices_found")
 
         choices = {
-            address: f"{_title(model, address)} ({info.name or address})"
-            for address, (model, info) in self._candidates.items()
+            address: f"{info.name or '?'} · {address} · {info.rssi} dBm"
+            for address, (_, info) in self._candidates.items()
         }
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({vol.Required(CONF_ADDRESS): vol.In(choices)}),
+            errors=errors,
         )
+
+    @callback
+    def _async_find_candidates(self) -> dict[str, tuple[str, BluetoothServiceInfoBleak]]:
+        """Likely SPLED controllers; every connectable device if none look likely."""
+        configured = self._async_current_ids(include_ignore=False)
+        seen = [
+            info
+            for info in async_discovered_service_info(self.hass, connectable=True)
+            if info.address not in configured
+        ]
+        likely = [
+            info
+            for info in seen
+            if looks_like_spled(info.manufacturer_data, info.name, info.service_uuids)
+        ]
+        for info in seen:
+            _LOGGER.debug(
+                "Nearby %s (%s dBm): %s",
+                info.address,
+                info.rssi,
+                describe_advertisement(info.manufacturer_data, info.name, info.service_uuids),
+            )
+        ordered = sorted(likely or seen, key=lambda info: info.rssi, reverse=True)
+        return {
+            info.address: (
+                model_from_manufacturer_data(info.manufacturer_data) or DEFAULT_MODEL,
+                info,
+            )
+            for info in ordered
+        }
+
+    async def _async_probe(self, info: BluetoothServiceInfoBleak) -> bool:
+        """Connect once and wait for a status frame."""
+        ble_device = async_ble_device_from_address(self.hass, info.address, connectable=True)
+        if ble_device is None:
+            return False
+        device = SPLedDevice(ble_device, name=info.name or info.address)
+        await device.start()
+        try:
+            ok = await device.wait_ready(PROBE_TIMEOUT)
+        finally:
+            await device.stop()
+        if not ok:
+            _LOGGER.warning(
+                "%s did not answer like an SPLED controller (last error: %s). Advertisement: %s",
+                info.address,
+                device.stats.last_error,
+                describe_advertisement(info.manufacturer_data, info.name, info.service_uuids),
+            )
+        return ok
 
     @callback
     def _create_entry(self, address: str, model: str) -> ConfigFlowResult:

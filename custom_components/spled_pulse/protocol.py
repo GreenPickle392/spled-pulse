@@ -269,6 +269,34 @@ def model_from_manufacturer_data(data: dict[int, bytes]) -> str | None:
     return MODEL_IDS.get(payload[0])
 
 
+SERVICE_UUIDS: Final = frozenset(
+    {"0000ffe0-0000-1000-8000-00805f9b34fb", "0000e0ff-0000-1000-8000-00805f9b34fb"}
+)
+
+
+def looks_like_spled(
+    manufacturer_data: dict[int, bytes], name: str | None, service_uuids: list[str]
+) -> bool:
+    """Loose match for the manual setup list.
+
+    Firmware revisions advertise differently, so this errs on the side of
+    listing a device; setup then confirms it by asking for a status frame.
+    """
+    if MANUFACTURER_ID in manufacturer_data:
+        return True
+    if name and name.upper().startswith("SP6"):
+        return True
+    return any(uuid.lower() in SERVICE_UUIDS for uuid in service_uuids)
+
+
+def describe_advertisement(
+    manufacturer_data: dict[int, bytes], name: str | None, service_uuids: list[str]
+) -> str:
+    """One-line summary of an advertisement for logs and diagnostics."""
+    maker = ", ".join(f"{mid}: {data.hex(' ')}" for mid, data in manufacturer_data.items())
+    return f"name={name!r} manufacturer_data={{{maker}}} service_uuids={service_uuids}"
+
+
 def kelvin_to_cold_warm(kelvin: int, min_kelvin: int, max_kelvin: int) -> tuple[int, int]:
     """Split a colour temperature into cold/warm channel ratios (sum = 255).
 

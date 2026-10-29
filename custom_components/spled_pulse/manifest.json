@@ -22,5 +22,5 @@
   "issue_tracker": "https://github.com/GreenPickle392/spled-pulse/issues",
   "loggers": ["bleak_retry_connector"],
   "requirements": [],
-  "version": "1.0.0"
+  "version": "1.0.1"
 }

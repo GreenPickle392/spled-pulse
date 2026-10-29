@@ -128,3 +128,26 @@ def test_kelvin_extremes_and_clamping() -> None:
     assert p.cold_warm_to_kelvin(0, 0, 2700, 6500) == 4600
     # Scale independent: a dimmed reading maps to the same temperature
     assert p.cold_warm_to_kelvin(50, 50, 2700, 6500) == p.cold_warm_to_kelvin(127, 127, 2700, 6500)
+
+
+@pytest.mark.parametrize(
+    ("data", "name", "uuids", "expected"),
+    [
+        ({20563: b"\x99\x99"}, None, [], True),  # unknown model byte, right maker
+        ({}, "SP642E", [], True),
+        ({}, "sp6xx", [], True),
+        ({}, None, ["0000FFE0-0000-1000-8000-00805F9B34FB"], True),
+        ({}, None, ["0000e0ff-0000-1000-8000-00805f9b34fb"], True),
+        ({76: b"\x02\x15"}, "iPhone", ["0000180f-0000-1000-8000-00805f9b34fb"], False),
+        ({}, None, [], False),
+    ],
+)
+def test_looks_like_spled(
+    data: dict[int, bytes], name: str | None, uuids: list[str], expected: bool
+) -> None:
+    assert p.looks_like_spled(data, name, uuids) is expected
+
+
+def test_describe_advertisement() -> None:
+    text = p.describe_advertisement({20563: b"\x2d\x10"}, "SP642E", ["x"])
+    assert text == "name='SP642E' manufacturer_data={20563: 2d 10} service_uuids=['x']"

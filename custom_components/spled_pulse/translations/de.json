@@ -3,7 +3,7 @@
     "flow_title": "{name}",
     "step": {
       "user": {
-        "description": "Wähle den SPLED-Controller aus, der hinzugefügt werden soll. Es werden nur eingeschaltete Controller in Bluetooth-Reichweite angezeigt.",
+        "description": "Wähle deinen SPLED-Controller. Passende Geräte stehen oben; gibt es keine, werden alle Bluetooth-Geräte in der Nähe angezeigt, stärkstes Signal zuerst. Unsicher welches? Trenne den Streifen 30 s vom Strom und schau, welcher Eintrag verschwindet. Das Gerät wird vor dem Hinzufügen geprüft.",
         "data": {
           "address": "Controller"
         }
@@ -14,8 +14,11 @@
     },
     "abort": {
       "already_configured": "Dieser Controller ist bereits eingerichtet.",
-      "no_devices_found": "Kein unterstützter SPLED-Controller in der Nähe gefunden. Stelle sicher, dass er eingeschaltet, in Reichweite und nicht mit der Handy-App verbunden ist.",
+      "no_devices_found": "Keine Bluetooth-Geräte gefunden. Prüfe, ob die Bluetooth-Integration von Home Assistant eingerichtet und der Controller eingeschaltet ist.",
       "not_supported": "Dieses Bluetooth-Gerät ist kein unterstützter SPLED-Controller."
+    },
+    "error": {
+      "cannot_connect": "Dieses Gerät hat nicht wie ein SPLED-Controller geantwortet. Wähle ein anderes oder sieh im Home-Assistant-Protokoll nach Details."
     }
   },
   "options": {
